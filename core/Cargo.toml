@@ -16,7 +16,7 @@ ed25519-dalek = "1.0.0-pre.3"
 either = "1.5"
 fnv = "1.0"
 futures = { version = "0.3.1", features = ["executor", "thread-pool"] }
-futures-timer = "3"
+futures-timer = "3.0.2"
 lazy_static = "1.2"
 libsecp256k1 = { version = "0.3.1", optional = true }
 log = "0.4"

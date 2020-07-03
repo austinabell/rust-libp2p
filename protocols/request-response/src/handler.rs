@@ -20,35 +20,26 @@
 
 mod protocol;
 
-use crate::{EMPTY_QUEUE_SHRINK_THRESHOLD, RequestId};
 use crate::codec::RequestResponseCodec;
+use crate::{RequestId, EMPTY_QUEUE_SHRINK_THRESHOLD};
 
-pub use protocol::{RequestProtocol, ResponseProtocol, ProtocolSupport};
+pub use protocol::{ProtocolSupport, RequestProtocol, ResponseProtocol};
 
-use futures::{
-    channel::oneshot,
-    future::BoxFuture,
-    prelude::*,
-    stream::FuturesUnordered
-};
-use libp2p_core::{
-    upgrade::{UpgradeError, NegotiationError},
-};
+use async_std::sync::{channel, Sender};
+use futures::{future::BoxFuture, prelude::*, stream::FuturesUnordered};
+use libp2p_core::upgrade::{NegotiationError, UpgradeError};
 use libp2p_swarm::{
-    SubstreamProtocol,
     protocols_handler::{
-        KeepAlive,
-        ProtocolsHandler,
-        ProtocolsHandlerEvent,
-        ProtocolsHandlerUpgrErr,
-    }
+        KeepAlive, ProtocolsHandler, ProtocolsHandlerEvent, ProtocolsHandlerUpgrErr,
+    },
+    SubstreamProtocol,
 };
 use smallvec::SmallVec;
 use std::{
     collections::VecDeque,
     io,
+    task::{Context, Poll},
     time::Duration,
-    task::{Context, Poll}
 };
 use wasm_timer::Instant;
 
@@ -77,11 +68,8 @@ where
     /// Outbound upgrades waiting to be emitted as an `OutboundSubstreamRequest`.
     outbound: VecDeque<RequestProtocol<TCodec>>,
     /// Inbound upgrades waiting for the incoming request.
-    inbound: FuturesUnordered<BoxFuture<'static,
-        Result<
-            (TCodec::Request, oneshot::Sender<TCodec::Response>),
-            oneshot::Canceled
-        >>>,
+    inbound:
+        FuturesUnordered<BoxFuture<'static, (Option<TCodec::Request>, Sender<TCodec::Response>)>>,
 }
 
 impl<TCodec> RequestResponseHandler<TCodec>
@@ -112,17 +100,17 @@ where
 #[doc(hidden)]
 pub enum RequestResponseHandlerEvent<TCodec>
 where
-    TCodec: RequestResponseCodec
+    TCodec: RequestResponseCodec,
 {
     /// An inbound request.
     Request {
         request: TCodec::Request,
-        sender: oneshot::Sender<TCodec::Response>
+        sender: Sender<TCodec::Response>,
     },
     /// An inbound response.
     Response {
         request_id: RequestId,
-        response: TCodec::Response
+        response: TCodec::Response,
     },
     /// An outbound upgrade (i.e. request) timed out.
     OutboundTimeout(RequestId),
@@ -148,11 +136,11 @@ where
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol> {
         // A channel for notifying the handler when the inbound
         // upgrade received the request.
-        let (rq_send, rq_recv) = oneshot::channel();
+        let (rq_send, rq_recv) = channel(1);
 
         // A channel for notifying the inbound upgrade when the
         // response is sent.
-        let (rs_send, rs_recv) = oneshot::channel();
+        let (rs_send, rs_recv) = channel(1);
 
         // By keeping all I/O inside the `ResponseProtocol` and thus the
         // inbound substream upgrade via above channels, we ensure that it
@@ -170,15 +158,14 @@ where
         // The handler waits for the request to come in. It then emits
         // `RequestResponseHandlerEvent::Request` together with a
         // `ResponseChannel`.
-        self.inbound.push(rq_recv.map_ok(move |rq| (rq, rs_send)).boxed());
+        self.inbound.push(Box::pin(
+            rq_recv.into_future().map(move |(rq, _)| (rq, rs_send)),
+        ));
 
         SubstreamProtocol::new(proto).with_timeout(self.substream_timeout)
     }
 
-    fn inject_fully_negotiated_inbound(
-        &mut self,
-        (): (),
-    ) {
+    fn inject_fully_negotiated_inbound(&mut self, (): ()) {
         // Nothing to do, as the response has already been sent
         // as part of the upgrade.
     }
@@ -188,9 +175,10 @@ where
         response: TCodec::Response,
         request_id: RequestId,
     ) {
-        self.pending_events.push_back(
-            RequestResponseHandlerEvent::Response {
-                request_id, response
+        self.pending_events
+            .push_back(RequestResponseHandlerEvent::Response {
+                request_id,
+                response,
             });
     }
 
@@ -206,8 +194,8 @@ where
     ) {
         match error {
             ProtocolsHandlerUpgrErr::Timeout => {
-                self.pending_events.push_back(
-                    RequestResponseHandlerEvent::OutboundTimeout(info));
+                self.pending_events
+                    .push_back(RequestResponseHandlerEvent::OutboundTimeout(info));
             }
             ProtocolsHandlerUpgrErr::Upgrade(UpgradeError::Select(NegotiationError::Failed)) => {
                 // The remote merely doesn't support the protocol(s) we requested.
@@ -216,7 +204,8 @@ where
                 // An event is reported to permit user code to react to the fact that
                 // the remote peer does not support the requested protocol(s).
                 self.pending_events.push_back(
-                    RequestResponseHandlerEvent::OutboundUnsupportedProtocols(info));
+                    RequestResponseHandlerEvent::OutboundUnsupportedProtocols(info),
+                );
             }
             _ => {
                 // Anything else is considered a fatal error or misbehaviour of
@@ -226,14 +215,11 @@ where
         }
     }
 
-    fn inject_listen_upgrade_error(
-        &mut self,
-        error: ProtocolsHandlerUpgrErr<io::Error>
-    ) {
+    fn inject_listen_upgrade_error(&mut self, error: ProtocolsHandlerUpgrErr<io::Error>) {
         match error {
             ProtocolsHandlerUpgrErr::Timeout => {
-                self.pending_events.push_back(
-                    RequestResponseHandlerEvent::InboundTimeout);
+                self.pending_events
+                    .push_back(RequestResponseHandlerEvent::InboundTimeout);
             }
             ProtocolsHandlerUpgrErr::Upgrade(UpgradeError::Select(NegotiationError::Failed)) => {
                 // The local peer merely doesn't support the protocol(s) requested.
@@ -241,8 +227,8 @@ where
                 // successfully communicate with other protocols already.
                 // An event is reported to permit user code to react to the fact that
                 // the local peer does not support the requested protocol(s).
-                self.pending_events.push_back(
-                    RequestResponseHandlerEvent::InboundUnsupportedProtocols);
+                self.pending_events
+                    .push_back(RequestResponseHandlerEvent::InboundUnsupportedProtocols);
             }
             _ => {
                 // Anything else is considered a fatal error or misbehaviour of
@@ -259,18 +245,17 @@ where
     fn poll(
         &mut self,
         cx: &mut Context,
-    ) -> Poll<
-        ProtocolsHandlerEvent<RequestProtocol<TCodec>, RequestId, Self::OutEvent, Self::Error>,
-    > {
+    ) -> Poll<ProtocolsHandlerEvent<RequestProtocol<TCodec>, RequestId, Self::OutEvent, Self::Error>>
+    {
         // Check for a pending (fatal) error.
         if let Some(err) = self.pending_error.take() {
             // The handler will not be polled again by the `Swarm`.
-            return Poll::Ready(ProtocolsHandlerEvent::Close(err))
+            return Poll::Ready(ProtocolsHandlerEvent::Close(err));
         }
 
         // Drain pending events.
         if let Some(event) = self.pending_events.pop_front() {
-            return Poll::Ready(ProtocolsHandlerEvent::Custom(event))
+            return Poll::Ready(ProtocolsHandlerEvent::Custom(event));
         } else if self.pending_events.capacity() > EMPTY_QUEUE_SHRINK_THRESHOLD {
             self.pending_events.shrink_to_fit();
         }
@@ -278,15 +263,17 @@ where
         // Check for inbound requests.
         while let Poll::Ready(Some(result)) = self.inbound.poll_next_unpin(cx) {
             match result {
-                Ok((rq, rs_sender)) => {
+                (Some(rq), rs_sender) => {
                     // We received an inbound request.
                     self.keep_alive = KeepAlive::Yes;
                     return Poll::Ready(ProtocolsHandlerEvent::Custom(
                         RequestResponseHandlerEvent::Request {
-                            request: rq, sender: rs_sender
-                        }))
+                            request: rq,
+                            sender: rs_sender,
+                        },
+                    ));
                 }
-                Err(oneshot::Canceled) => {
+                (None, _) => {
                     // The inbound upgrade has errored or timed out reading
                     // or waiting for the request. The handler is informed
                     // via `inject_listen_upgrade_error`.
@@ -297,13 +284,10 @@ where
         // Emit outbound requests.
         if let Some(request) = self.outbound.pop_front() {
             let info = request.request_id;
-            return Poll::Ready(
-                ProtocolsHandlerEvent::OutboundSubstreamRequest {
-                    protocol: SubstreamProtocol::new(request)
-                        .with_timeout(self.substream_timeout),
-                    info,
-                },
-            )
+            return Poll::Ready(ProtocolsHandlerEvent::OutboundSubstreamRequest {
+                protocol: SubstreamProtocol::new(request).with_timeout(self.substream_timeout),
+                info,
+            });
         }
 
         debug_assert!(self.outbound.is_empty());
@@ -323,4 +307,3 @@ where
         Poll::Pending
     }
 }
-

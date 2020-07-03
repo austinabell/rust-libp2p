@@ -23,20 +23,13 @@
 //! receives a request and sends a response, whereas the
 //! outbound upgrade send a request and receives a response.
 
-use crate::RequestId;
 use crate::codec::RequestResponseCodec;
+use crate::RequestId;
 
-use futures::{
-    channel::oneshot,
-    future::BoxFuture,
-    prelude::*,
-};
-use libp2p_core::{
-    upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo},
-};
-use libp2p_swarm::{
-    NegotiatedSubstream,
-};
+use async_std::sync::{Receiver, Sender};
+use futures::{future::BoxFuture, prelude::*};
+use libp2p_core::upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
+use libp2p_swarm::NegotiatedSubstream;
 use smallvec::SmallVec;
 use std::io;
 
@@ -48,7 +41,7 @@ pub enum ProtocolSupport {
     /// The protocol is only supported for outbound requests.
     Outbound,
     /// The protocol is supported for inbound and outbound requests.
-    Full
+    Full,
 }
 
 impl ProtocolSupport {
@@ -75,17 +68,17 @@ impl ProtocolSupport {
 #[derive(Debug)]
 pub struct ResponseProtocol<TCodec>
 where
-    TCodec: RequestResponseCodec
+    TCodec: RequestResponseCodec,
 {
     pub(crate) codec: TCodec,
     pub(crate) protocols: SmallVec<[TCodec::Protocol; 2]>,
-    pub(crate) request_sender: oneshot::Sender<TCodec::Request>,
-    pub(crate) response_receiver: oneshot::Receiver<TCodec::Response>
+    pub(crate) request_sender: Sender<TCodec::Request>,
+    pub(crate) response_receiver: Receiver<TCodec::Response>,
 }
 
 impl<TCodec> UpgradeInfo for ResponseProtocol<TCodec>
 where
-    TCodec: RequestResponseCodec
+    TCodec: RequestResponseCodec,
 {
     type Info = TCodec::Protocol;
     type InfoIter = smallvec::IntoIter<[Self::Info; 2]>;
@@ -103,18 +96,23 @@ where
     type Error = io::Error;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
 
-    fn upgrade_inbound(mut self, mut io: NegotiatedSubstream, protocol: Self::Info) -> Self::Future {
+    fn upgrade_inbound(
+        mut self,
+        mut io: NegotiatedSubstream,
+        protocol: Self::Info,
+    ) -> Self::Future {
         async move {
             let read = self.codec.read_request(&protocol, &mut io);
             let request = read.await?;
-            if let Ok(()) = self.request_sender.send(request) {
-                if let Ok(response) = self.response_receiver.await {
-                    let write = self.codec.write_response(&protocol, &mut io, response);
-                    write.await?;
-                }
+            self.request_sender.send(request).await;
+            if let Some(response) = self.response_receiver.next().await {
+                let write = self.codec.write_response(&protocol, &mut io, response);
+                write.await?;
             }
+
             Ok(())
-        }.boxed()
+        }
+        .boxed()
     }
 }
 
@@ -124,7 +122,7 @@ where
 #[derive(Debug, Clone)]
 pub struct RequestProtocol<TCodec>
 where
-    TCodec: RequestResponseCodec
+    TCodec: RequestResponseCodec,
 {
     pub(crate) codec: TCodec,
     pub(crate) protocols: SmallVec<[TCodec::Protocol; 2]>,
@@ -134,7 +132,7 @@ where
 
 impl<TCodec> UpgradeInfo for RequestProtocol<TCodec>
 where
-    TCodec: RequestResponseCodec
+    TCodec: RequestResponseCodec,
 {
     type Info = TCodec::Protocol;
     type InfoIter = smallvec::IntoIter<[Self::Info; 2]>;
@@ -152,14 +150,18 @@ where
     type Error = io::Error;
     type Future = BoxFuture<'static, Result<Self::Output, Self::Error>>;
 
-    fn upgrade_outbound(mut self, mut io: NegotiatedSubstream, protocol: Self::Info) -> Self::Future {
+    fn upgrade_outbound(
+        mut self,
+        mut io: NegotiatedSubstream,
+        protocol: Self::Info,
+    ) -> Self::Future {
         async move {
             let write = self.codec.write_request(&protocol, &mut io, self.request);
             write.await?;
             let read = self.codec.read_response(&protocol, &mut io);
             let response = read.await?;
             Ok(response)
-        }.boxed()
+        }
+        .boxed()
     }
 }
-

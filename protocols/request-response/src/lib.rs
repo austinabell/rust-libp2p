@@ -74,7 +74,7 @@ pub mod handler;
 pub use codec::{ProtocolName, RequestResponseCodec};
 pub use handler::ProtocolSupport;
 
-use futures::channel::oneshot;
+use async_std::sync::Sender;
 use handler::{RequestProtocol, RequestResponseHandler, RequestResponseHandlerEvent};
 use libp2p_core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId};
 use libp2p_swarm::{
@@ -177,7 +177,7 @@ pub enum InboundFailure {
 #[derive(Debug)]
 pub struct ResponseChannel<TResponse> {
     pub peer: PeerId,
-    pub sender: oneshot::Sender<TResponse>,
+    pub sender: Sender<TResponse>,
 }
 
 impl<TResponse> ResponseChannel<TResponse> {
@@ -189,13 +189,14 @@ impl<TResponse> ResponseChannel<TResponse> {
     /// If the response channel is no longer open then the inbound
     /// request timed out waiting for the response.
     pub fn is_open(&self) -> bool {
-        !self.sender.is_canceled()
+        todo!()
+        // !self.sender.
     }
 
-    /// Sends a response through the oneshot channel.
+    /// Sends a response through the channel.
     /// If the receiving end has dropped, this will return an `Err` with the response instead.
-    pub fn send(self, rs: TResponse) -> Result<(), TResponse> {
-        self.sender.send(rs)
+    pub async fn send(self, rs: TResponse) {
+        self.sender.send(rs).await
     }
 }
 

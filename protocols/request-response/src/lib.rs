@@ -174,7 +174,7 @@ pub enum InboundFailure {
 /// A channel for sending a response to an inbound request.
 ///
 /// See [`RequestResponse::send_response`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResponseChannel<TResponse> {
     pub peer: PeerId,
     pub sender: Sender<TResponse>,
@@ -189,14 +189,14 @@ impl<TResponse> ResponseChannel<TResponse> {
     /// If the response channel is no longer open then the inbound
     /// request timed out waiting for the response.
     pub fn is_open(&self) -> bool {
-        todo!()
-        // !self.sender.
+        self.sender.is_empty()
     }
-
     /// Sends a response through the channel.
     /// If the receiving end has dropped, this will return an `Err` with the response instead.
     pub async fn send(self, rs: TResponse) {
-        self.sender.send(rs).await
+        if self.sender.is_empty() {
+            self.sender.send(rs).await;
+        }
     }
 }
 
@@ -359,11 +359,15 @@ where
     ///
     /// The provided `ResponseChannel` is obtained from a
     /// [`RequestResponseMessage::Request`].
-    pub fn send_response(&mut self, ch: ResponseChannel<TCodec::Response>, rs: TCodec::Response) {
+    pub async fn send_response(
+        &mut self,
+        ch: ResponseChannel<TCodec::Response>,
+        rs: TCodec::Response,
+    ) {
         // Fails only if the inbound upgrade timed out waiting for the response,
         // in which case the handler emits `RequestResponseHandlerEvent::InboundTimeout`
         // which in turn results in `RequestResponseEvent::InboundFailure`.
-        let _ = ch.send(rs);
+        let _ = ch.send(rs).await;
     }
 
     /// Adds a known address for a peer that can be used for

@@ -78,7 +78,7 @@ fn ping_protocol() {
                 } => {
                     assert_eq!(&request, &expected_ping);
                     assert_eq!(&peer, &peer2_id);
-                    swarm1.send_response(channel, pong.clone());
+                    swarm1.send_response(channel, pong.clone()).await;
                 },
                 e => panic!("Peer1: Unexpected event: {:?}", e)
             }

@@ -21,7 +21,7 @@
 //! Integration tests for the `RequestResponse` network behaviour.
 
 use async_trait::async_trait;
-use libp2p_core::{
+use libp2p::core::{
     Multiaddr,
     PeerId,
     identity,
@@ -29,10 +29,10 @@ use libp2p_core::{
     transport::{Transport, boxed::Boxed},
     upgrade::{self, read_one, write_one}
 };
-use libp2p_noise::{NoiseConfig, X25519Spec, Keypair};
-use libp2p_request_response::*;
-use libp2p_swarm::Swarm;
-use libp2p_tcp::TcpConfig;
+use libp2p::noise::{NoiseConfig, X25519Spec, Keypair};
+use libp2p::request_response::*;
+use libp2p::swarm::Swarm;
+use libp2p::tcp::TcpConfig;
 use futures::{prelude::*, channel::mpsc};
 use rand::{self, Rng};
 use std::{io, iter};
@@ -124,7 +124,7 @@ fn mk_transport() -> (PeerId, Boxed<(PeerId, StreamMuxerBox), io::Error>) {
         .nodelay(true)
         .upgrade(upgrade::Version::V1)
         .authenticate(NoiseConfig::xx(noise_keys).into_authenticated())
-        .multiplex(libp2p_yamux::Config::default())
+        .multiplex(libp2p::yamux::Config::default())
         .map(|(peer, muxer), _| (peer, StreamMuxerBox::new(muxer)))
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
         .boxed();

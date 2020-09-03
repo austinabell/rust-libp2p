@@ -21,19 +21,18 @@
 //! Integration tests for the `RequestResponse` network behaviour.
 
 use async_trait::async_trait;
+use futures::{channel::mpsc, prelude::*};
 use libp2p::core::{
-    Multiaddr,
-    PeerId,
     identity,
     muxing::StreamMuxerBox,
-    transport::{Transport, boxed::Boxed},
-    upgrade::{self, read_one, write_one}
+    transport::{boxed::Boxed, Transport},
+    upgrade::{self, read_one, write_one},
+    Multiaddr, PeerId,
 };
-use libp2p::noise::{NoiseConfig, X25519Spec, Keypair};
-use libp2p::request_response::*;
+use libp2p::noise::{Keypair, NoiseConfig, X25519Spec};
 use libp2p::swarm::Swarm;
 use libp2p::tcp::TcpConfig;
-use futures::{prelude::*, channel::mpsc};
+use libp2p_request_response::*;
 use rand::{self, Rng};
 use std::{io, iter};
 
@@ -74,13 +73,13 @@ fn ping_protocol() {
             match swarm1.next().await {
                 RequestResponseEvent::Message {
                     peer,
-                    message: RequestResponseMessage::Request { request, channel }
+                    message: RequestResponseMessage::Request { request, channel },
                 } => {
                     assert_eq!(&request, &expected_ping);
                     assert_eq!(&peer, &peer2_id);
                     swarm1.send_response(channel, pong.clone()).await;
-                },
-                e => panic!("Peer1: Unexpected event: {:?}", e)
+                }
+                e => panic!("Peer1: Unexpected event: {:?}", e),
             }
         }
     };
@@ -95,19 +94,23 @@ fn ping_protocol() {
             match swarm2.next().await {
                 RequestResponseEvent::Message {
                     peer,
-                    message: RequestResponseMessage::Response { request_id, response }
+                    message:
+                        RequestResponseMessage::Response {
+                            request_id,
+                            response,
+                        },
                 } => {
                     count += 1;
                     assert_eq!(&response, &expected_pong);
                     assert_eq!(&peer, &peer1_id);
                     assert_eq!(req_id, request_id);
                     if count >= num_pings {
-                        return
+                        return;
                     } else {
                         req_id = swarm2.send_request(&peer1_id, ping.clone());
                     }
-                },
-                e => panic!("Peer2: Unexpected event: {:?}", e)
+                }
+                e => panic!("Peer2: Unexpected event: {:?}", e),
             }
         }
     };
@@ -119,7 +122,9 @@ fn ping_protocol() {
 fn mk_transport() -> (PeerId, Boxed<(PeerId, StreamMuxerBox), io::Error>) {
     let id_keys = identity::Keypair::generate_ed25519();
     let peer_id = id_keys.public().into_peer_id();
-    let noise_keys = Keypair::<X25519Spec>::new().into_authentic(&id_keys).unwrap();
+    let noise_keys = Keypair::<X25519Spec>::new()
+        .into_authentic(&id_keys)
+        .unwrap();
     let transport = TcpConfig::new()
         .nodelay(true)
         .upgrade(upgrade::Version::V1)
@@ -154,10 +159,9 @@ impl RequestResponseCodec for PingCodec {
     type Request = Ping;
     type Response = Pong;
 
-    async fn read_request<T>(&mut self, _: &PingProtocol, io: &mut T)
-        -> io::Result<Self::Request>
+    async fn read_request<T>(&mut self, _: &PingProtocol, io: &mut T) -> io::Result<Self::Request>
     where
-        T: AsyncRead + Unpin + Send
+        T: AsyncRead + Unpin + Send,
     {
         read_one(io, 1024)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -165,10 +169,9 @@ impl RequestResponseCodec for PingCodec {
             .await
     }
 
-    async fn read_response<T>(&mut self, _: &PingProtocol, io: &mut T)
-        -> io::Result<Self::Response>
+    async fn read_response<T>(&mut self, _: &PingProtocol, io: &mut T) -> io::Result<Self::Response>
     where
-        T: AsyncRead + Unpin + Send
+        T: AsyncRead + Unpin + Send,
     {
         read_one(io, 1024)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -176,20 +179,27 @@ impl RequestResponseCodec for PingCodec {
             .await
     }
 
-    async fn write_request<T>(&mut self, _: &PingProtocol, io: &mut T, Ping(data): Ping)
-        -> io::Result<()>
+    async fn write_request<T>(
+        &mut self,
+        _: &PingProtocol,
+        io: &mut T,
+        Ping(data): Ping,
+    ) -> io::Result<()>
     where
-        T: AsyncWrite + Unpin + Send
+        T: AsyncWrite + Unpin + Send,
     {
         write_one(io, data).await
     }
 
-    async fn write_response<T>(&mut self, _: &PingProtocol, io: &mut T, Pong(data): Pong)
-        -> io::Result<()>
+    async fn write_response<T>(
+        &mut self,
+        _: &PingProtocol,
+        io: &mut T,
+        Pong(data): Pong,
+    ) -> io::Result<()>
     where
-        T: AsyncWrite + Unpin + Send
+        T: AsyncWrite + Unpin + Send,
     {
         write_one(io, data).await
     }
 }
-
